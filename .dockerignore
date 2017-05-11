@@ -1,12 +1,15 @@
 # Ignore .git folder
 .git*
-release
-build
 
-.gitignore
-README.md
 CHANGELOG.md
 LICENSE
 Makefile
-debug
-.vscode
+README.md
+README.md.bu
+build
+circle.yml
+docker-entrypoint.sh
+logo.png
+docs/callback.md
+docs/elasticsearch.md
+docs/web.md

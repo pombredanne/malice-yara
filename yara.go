@@ -1,20 +1,23 @@
 package main
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/crackcomm/go-clitable"
+	"github.com/fatih/structs"
+	"github.com/gorilla/mux"
 	"github.com/hillu/go-yara"
+	"github.com/maliceio/go-plugin-utils/database/elasticsearch"
+	"github.com/maliceio/go-plugin-utils/utils"
 	"github.com/parnurzeal/gorequest"
 	"github.com/urfave/cli"
-	r "gopkg.in/dancannon/gorethink.v2"
 )
 
 // Version stores the plugin's version
@@ -23,55 +26,116 @@ var Version string
 // BuildTime stores the plugin's build time
 var BuildTime string
 
+// yara rules directory
+var rules string
+
 const (
 	name     = "yara"
 	category = "av"
 )
 
 type pluginResults struct {
-	ID   string      `json:"id" gorethink:"id,omitempty"`
-	Data ResultsData `json:"yara" gorethink:"yara"`
+	ID   string      `json:"id" structs:"id,omitempty"`
+	Data ResultsData `json:"yara" structs:"yara"`
 }
 
 // Yara json object
 type Yara struct {
-	Results ResultsData `json:"yara"`
+	Results ResultsData `json:"yara" structs:"yara"`
 }
 
 // ResultsData json object
 type ResultsData struct {
-	Matches []yara.MatchRule `json:"matches" gorethink:"matches"`
+	Matches []yara.MatchRule `json:"matches" structs:"matches"`
 }
 
-func getopt(name, dfault string) string {
-	value := os.Getenv(name)
-	if value == "" {
-		value = dfault
+// scanFile scans file with all yara rules in the rules folder
+func scanFile(path string, rulesDir string, timeout int) ResultsData {
+
+	yaraResults := ResultsData{}
+	fileList := []string{}
+
+	// walk rules directory
+	err := filepath.Walk(rulesDir, func(path string, f os.FileInfo, err error) error {
+		fileList = append(fileList, path)
+		return nil
+	})
+	utils.Assert(err)
+
+	// new yara compiler
+	comp, err := yara.NewCompiler()
+	utils.Assert(err)
+
+	// compile all yara rules
+	for _, file := range fileList {
+		f, err := os.Open(file)
+		utils.Assert(err)
+		comp.AddFile(f, "malice")
+		f.Close()
 	}
-	return value
-}
 
-func assert(err error) {
-	if err != nil {
-		log.Fatal(err)
-	}
-}
+	r, err := comp.GetRules()
 
-// getSHA256 calculates a file's sha256sum
-func getSHA256(name string) string {
+	matches, err := r.ScanFile(
+		path, // filename string
+		0,    // flags ScanFlags
+		time.Duration(timeout)*time.Second, //timeout time.Duration
+	)
+	utils.Assert(err)
 
-	dat, err := ioutil.ReadFile(name)
-	assert(err)
+	yaraResults.Matches = matches
 
-	h256 := sha256.New()
-	_, err = h256.Write(dat)
-	assert(err)
-
-	return fmt.Sprintf("%x", h256.Sum(nil))
+	return yaraResults
 }
 
 func printStatus(resp gorequest.Response, body string, errs []error) {
-	fmt.Println(resp.Status)
+	fmt.Println(body)
+}
+
+func webService() {
+	router := mux.NewRouter().StrictSlash(true)
+	router.HandleFunc("/scan", webAvScan).Methods("POST")
+	log.Info("web service listening on port :3993")
+	log.Fatal(http.ListenAndServe(":3993", router))
+}
+
+func webAvScan(w http.ResponseWriter, r *http.Request) {
+
+	r.ParseMultipartForm(32 << 20)
+	file, header, err := r.FormFile("malware")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintln(w, "Please supply a valid file to scan.")
+		log.Error(err)
+	}
+	defer file.Close()
+
+	log.Debug("Uploaded fileName: ", header.Filename)
+
+	tmpfile, err := ioutil.TempFile("/malware", "web_")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer os.Remove(tmpfile.Name()) // clean up
+
+	data, err := ioutil.ReadAll(file)
+
+	if _, err = tmpfile.Write(data); err != nil {
+		log.Fatal(err)
+	}
+	if err = tmpfile.Close(); err != nil {
+		log.Fatal(err)
+	}
+
+	// Do AV scan
+	yara := scanFile(tmpfile.Name(), rules, 60)
+
+	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+	w.WriteHeader(http.StatusOK)
+
+	if err := json.NewEncoder(w).Encode(yara); err != nil {
+		log.Fatal(err)
+	}
 }
 
 // TODO: handle more than just the first Offset, handle multiple MatchStrings
@@ -101,124 +165,33 @@ func printMarkDownTable(yara Yara) {
 	}
 }
 
-// scanFile scans file with all yara rules in the rules folder
-func scanFile(path string, rulesDir string) ResultsData {
-	yaraResults := ResultsData{}
-
-	fileList := []string{}
-	err := filepath.Walk(rulesDir, func(path string, f os.FileInfo, err error) error {
-		fileList = append(fileList, path)
-		return nil
-	})
-	assert(err)
-
-	comp, err := yara.NewCompiler()
-	assert(err)
-
-	for _, file := range fileList {
-		// fmt.Println(file)
-		f, err := os.Open(file)
-		assert(err)
-		comp.AddFile(f, "malice")
-		f.Close()
-	}
-
-	r, err := comp.GetRules()
-
-	// args: filename string, flags ScanFlags, timeout time.Duration
-	matches, err := r.ScanFile(path, 0, 60)
-	assert(err)
-	yaraResults.Matches = matches
-	// fmt.Printf("Matches: %+v", matches)
-	return yaraResults
-}
-
-// writeToDatabase upserts plugin results into Database
-func writeToDatabase(results pluginResults) {
-
-	address := fmt.Sprintf("%s:28015", getopt("MALICE_RETHINKDB", "rethink"))
-
-	// connect to RethinkDB
-	session, err := r.Connect(r.ConnectOpts{
-		Address:  address,
-		Timeout:  5 * time.Second,
-		Database: "malice",
-	})
-	defer session.Close()
-
-	if err == nil {
-		res, err := r.Table("samples").Get(results.ID).Run(session)
-		assert(err)
-		defer res.Close()
-
-		if res.IsNil() {
-			// upsert into RethinkDB
-			resp, err := r.Table("samples").Insert(results, r.InsertOpts{Conflict: "replace"}).RunWrite(session)
-			assert(err)
-			log.Debug(resp)
-		} else {
-			resp, err := r.Table("samples").Get(results.ID).Update(map[string]interface{}{
-				"plugins": map[string]interface{}{
-					category: map[string]interface{}{
-						name: results.Data,
-					},
-				},
-			}).RunWrite(session)
-			assert(err)
-
-			log.Debug(resp)
-		}
-
-	} else {
-		log.Debug(err)
-	}
-}
-
-var appHelpTemplate = `Usage: {{.Name}} {{if .Flags}}[OPTIONS] {{end}}COMMAND [arg...]
-
-{{.Usage}}
-
-Version: {{.Version}}{{if or .Author .Email}}
-
-Author:{{if .Author}}
-  {{.Author}}{{if .Email}} - <{{.Email}}>{{end}}{{else}}
-  {{.Email}}{{end}}{{end}}
-{{if .Flags}}
-Options:
-  {{range .Flags}}{{.}}
-  {{end}}{{end}}
-Commands:
-  {{range .Commands}}{{.Name}}{{with .ShortName}}, {{.}}{{end}}{{ "\t" }}{{.Usage}}
-  {{end}}
-Run '{{.Name}} COMMAND --help' for more information on a command.
-`
-
 func main() {
-	cli.AppHelpTemplate = appHelpTemplate
+
+	var elastic string
+
+	cli.AppHelpTemplate = utils.AppHelpTemplate
 	app := cli.NewApp()
+
 	app.Name = "yara"
 	app.Author = "blacktop"
 	app.Email = "https://github.com/blacktop"
 	app.Version = Version + ", BuildTime: " + BuildTime
 	app.Compiled, _ = time.Parse("20060102", BuildTime)
 	app.Usage = "Malice YARA Plugin"
-	var rules string
-	var table bool
-	var rethinkdb string
 	app.Flags = []cli.Flag{
 		cli.BoolFlag{
 			Name:  "verbose, V",
 			Usage: "verbose output",
 		},
 		cli.StringFlag{
-			Name:        "rethinkdb",
+			Name:        "elasitcsearch",
 			Value:       "",
-			Usage:       "rethinkdb address for Malice to store results",
-			EnvVar:      "MALICE_RETHINKDB",
-			Destination: &rethinkdb,
+			Usage:       "elasitcsearch address for Malice to store results",
+			EnvVar:      "MALICE_ELASTICSEARCH",
+			Destination: &elastic,
 		},
 		cli.BoolFlag{
-			Name:   "post, p",
+			Name:   "callback, c",
 			Usage:  "POST results to Malice webhook",
 			EnvVar: "MALICE_ENDPOINT",
 		},
@@ -228,9 +201,14 @@ func main() {
 			EnvVar: "MALICE_PROXY",
 		},
 		cli.BoolFlag{
-			Name:        "table, t",
-			Usage:       "output as Markdown table",
-			Destination: &table,
+			Name:  "table, t",
+			Usage: "output as Markdown table",
+		},
+		cli.IntFlag{
+			Name:   "timeout",
+			Value:  60,
+			Usage:  "malice plugin timeout (in seconds)",
+			EnvVar: "MALICE_TIMEOUT",
 		},
 		cli.StringFlag{
 			Name:        "rules",
@@ -239,34 +217,64 @@ func main() {
 			Destination: &rules,
 		},
 	}
+	app.Commands = []cli.Command{
+		{
+			Name:  "web",
+			Usage: "Create a Yara web service",
+			Action: func(c *cli.Context) error {
+				webService()
+				return nil
+			},
+		},
+	}
 	app.ArgsUsage = "FILE to scan with YARA"
 	app.Action = func(c *cli.Context) error {
+		if c.Bool("verbose") {
+			log.SetLevel(log.DebugLevel)
+		}
+
 		if c.Args().Present() {
-			path := c.Args().First()
-			// Check that file exists
+
+			path, err := filepath.Abs(c.Args().First())
+			utils.Assert(err)
+
 			if _, err := os.Stat(path); os.IsNotExist(err) {
-				assert(err)
+				utils.Assert(err)
 			}
 
-			if c.Bool("verbose") {
-				log.SetLevel(log.DebugLevel)
-			} else {
-				r.Log.Out = ioutil.Discard
-			}
-
-			yara := Yara{Results: scanFile(path, rules)}
+			yara := Yara{Results: scanFile(path, rules, c.Int("timeout"))}
 
 			// upsert into Database
-			writeToDatabase(pluginResults{
-				ID:   getopt("MALICE_SCANID", getSHA256(path)),
-				Data: yara.Results,
+			elasticsearch.InitElasticSearch(elastic)
+			err = elasticsearch.WritePluginResultsToDatabase(elasticsearch.PluginResults{
+				ID:       utils.Getopt("MALICE_SCANID", utils.GetSHA256(path)),
+				Name:     name,
+				Category: category,
+				Data:     structs.Map(yara.Results),
 			})
+			if err != nil {
+				log.WithFields(log.Fields{
+					"func": "elasticsearch.WritePluginResultsToDatabase",
+				}).Debug(err)
+			}
 
-			if table {
+			if c.Bool("table") {
 				printMarkDownTable(yara)
 			} else {
 				yaraJSON, err := json.Marshal(yara)
-				assert(err)
+				utils.Assert(err)
+				if c.Bool("callback") {
+					request := gorequest.New()
+					if c.Bool("proxy") {
+						request = gorequest.New().Proxy(os.Getenv("MALICE_PROXY"))
+					}
+					request.Post(os.Getenv("MALICE_ENDPOINT")).
+						Set("X-Malice-ID", utils.Getopt("MALICE_SCANID", utils.GetSHA256(path))).
+						Send(string(yaraJSON)).
+						End(printStatus)
+
+					return nil
+				}
 				fmt.Println(string(yaraJSON))
 			}
 		} else {
@@ -276,5 +284,5 @@ func main() {
 	}
 
 	err := app.Run(os.Args)
-	assert(err)
+	utils.Assert(err)
 }

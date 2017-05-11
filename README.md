@@ -3,7 +3,7 @@
 malice-yara
 ===========
 
-[![Circle CI](https://circleci.com/gh/maliceio/malice-yara.png?style=shield)](https://circleci.com/gh/maliceio/malice-yara) [![License](http://img.shields.io/:license-mit-blue.svg)](http://doge.mit-license.org) [![Docker Stars](https://img.shields.io/docker/stars/malice/yara.svg)](https://hub.docker.com/r/malice/yara/) [![Docker Pulls](https://img.shields.io/docker/pulls/malice/yara.svg)](https://hub.docker.com/r/malice/yara/) [![Docker Image](https://img.shields.io/badge/docker image-34.95 MB-blue.svg)](https://hub.docker.com/r/malice/virustotal/)
+[![Circle CI](https://circleci.com/gh/maliceio/malice-yara.png?style=shield)](https://circleci.com/gh/maliceio/malice-yara) [![License](http://img.shields.io/:license-mit-blue.svg)](http://doge.mit-license.org) [![Docker Stars](https://img.shields.io/docker/stars/malice/yara.svg)](https://hub.docker.com/r/malice/yara/) [![Docker Pulls](https://img.shields.io/docker/pulls/malice/yara.svg)](https://hub.docker.com/r/malice/yara/) [![Docker Image](https://img.shields.io/badge/docker%20image-39.8%20MB-blue.svg)](https://hub.docker.com/r/malice/virustotal/)
 
 Malice Yara Plugin
 
@@ -33,15 +33,17 @@ Usage: yara [OPTIONS] COMMAND [arg...]
 
 Malice YARA Plugin
 
-Version: v0.1.0, BuildTime: 20160214
+Version: v0.1.0, BuildTime: 20170123
 
 Author:
   blacktop - <https://github.com/blacktop>
 
 Options:
   --verbose, -V		verbose output
-  --rethinkdb value	rethinkdb address for Malice to store results [$MALICE_RETHINKDB]
-  --post, -p		POST results to Malice webhook [$MALICE_ENDPOINT]
+  --elasitcsearch value elasitcsearch address for Malice to store results [$MALICE_ELASTICSEARCH]
+  --timeout value       malice plugin timeout (in seconds) (default: 60) [$MALICE_TIMEOUT]  
+  --callback, -c	    POST results to Malice webhook [$MALICE_ENDPOINT]
+  --timeout value       malice plugin timeout (in seconds) (default: 60) [$MALICE_TIMEOUT]    
   --proxy, -x		proxy settings for Malice webhook endpoint [$MALICE_PROXY]
   --table, -t		output as Markdown table
   --rules value		YARA rules directory (default: "/rules")
@@ -56,7 +58,10 @@ Run 'yara COMMAND --help' for more information on a command.
 
 This will output to stdout and POST to malice results API webhook endpoint.
 
-### Sample Output JSON:
+Sample Output
+-------------
+
+### JSON:
 
 ```json
 {
@@ -82,7 +87,7 @@ This will output to stdout and POST to malice results API webhook endpoint.
 }
 ```
 
-### Sample FILTERED Output JSON:
+### FILTERED Output JSON:
 
 ```bash
 $ cat JSON_OUTPUT | jq '.[][][] .Rule'
@@ -94,7 +99,7 @@ $ cat JSON_OUTPUT | jq '.[][][] .Rule'
 "_Armadillo_v171_"
 ```
 
-### Sample Output STDOUT (Markdown Table):
+### STDOUT (Markdown Table):
 
 ---
 
@@ -110,35 +115,27 @@ $ cat JSON_OUTPUT | jq '.[][][] .Rule'
 
 ---
 
-### To write results to [RethinkDB](https://rethinkdb.com)
+Documentation
+-------------
 
-```bash
-$ docker volume create --name malice
-$ docker run -d -p 28015:28015 -p 8080:8080 -v malice:/data --name rethink rethinkdb
-$ docker run --rm -v /path/to/malware:/malware:ro --link rethink malice/yara -t FILE
-```
-
-### To Run on OSX
-
--	Install [Homebrew](http://brew.sh)
-
-```bash
-$ brew install caskroom/cask/brew-cask
-$ brew cask install virtualbox
-$ brew install docker
-$ brew install docker-machine
-$ docker-machine create --driver virtualbox malice
-$ eval $(docker-machine env malice)
-```
-
-### Documentation
+-	[To write results to ElasticSearch](https://github.com/maliceio/malice-yara/blob/master/docs/elasticsearch.md)
+-	[To create a Yara scan micro-service](https://github.com/maliceio/malice-yara/blob/master/docs/web.md)
+-	[To post results to a webhook](https://github.com/maliceio/malice-yara/blob/master/docs/callback.md)
 
 ### Issues
 
 Find a bug? Want more features? Find something missing in the documentation? Let me know! Please don't hesitate to [file an issue](https://github.com/maliceio/malice-yara/issues/new) and I'll get right on it.
 
-### Credits
+### CHANGELOG
+
+See [`CHANGELOG.md`](https://github.com/maliceio/malice-yara/blob/master/CHANGELOG.md)
+
+### Contributing
+
+[See all contributors on GitHub](https://github.com/maliceio/malice-yara/graphs/contributors).
+
+Please update the [CHANGELOG.md](https://github.com/maliceio/malice-yara/blob/master/CHANGELOG.md) and submit a [Pull Request on GitHub](https://help.github.com/articles/using-pull-requests/).
 
 ### License
 
-MIT Copyright (c) 2016 **blacktop**
+MIT Copyright (c) 2016-2017 **blacktop**
